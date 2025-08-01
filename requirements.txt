@@ -1,0 +1,10 @@
+fastmcp
+pandas
+openpyxl
+xlrd
+click
+httpx
+tuik-scraper
+Flask
+PyJWT
+cryptography
