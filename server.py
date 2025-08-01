@@ -199,14 +199,18 @@ class TUIKMCPServer:
 @click.option('--port', default=8070, help='Sunucu portu (varsayılan: 8070)')
 def main(host, port):
     """TÜİK Veri Analizi MCP Sunucusunu başlatır."""
-    
-    async def _run():
-        server = TUIKMCPServer(host=host, port=port)
+    server = TUIKMCPServer(host=host, port=port)
+
+    # Sunucuyu asenkron olarak başlatmak için bir fonksiyon
+    async def run_server():
         mcp_app = await server.initialize()
-        mcp_app.run(transport='sse')
+        # Hata mesajının önerdiği doğru metodu kullanıyoruz: run_sse_async
+        # Bu metot zaten asenkron olduğu için 'await' ile çağrılmalıdır.
+        await mcp_app.run_sse_async()
 
     try:
-        asyncio.run(_run())
+        # Asenkron fonksiyonu asyncio.run ile çalıştırıyoruz.
+        asyncio.run(run_server())
     except KeyboardInterrupt:
         print("\nSunucu kapatılıyor.")
 
