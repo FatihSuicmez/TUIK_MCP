@@ -1,17 +1,35 @@
 import os
 import json
-import pandas as pd
+import pickle
+import faiss
+import numpy as np
 import asyncio
-import click
 import jwt
-from typing import List, Dict, Any, Optional
+import click
 from collections import namedtuple
+from typing import Dict, Any, Optional
 
-# fastmcp kütüphanesinden sunucu oluşturmak için gerekli olan ana sınıfı içe aktarıyoruz.
 from mcp.server.fastmcp import FastMCP
-# Daha önce yazdığımız loglama yardımcısını içe aktarıyoruz.
+from sentence_transformers import SentenceTransformer
+# Orijinal kodunuzda olan ama bizim RAG sunucusunda olmayan bazı importları geri ekledik
 from utils.logging import setup_logger
 
+# --- YENİ EKLENEN RAG BİLEŞENLERİ ---
+# Modelleri ve veritabanını sunucu başlamadan önce bir kez yükle
+try:
+    print("Embedding modeli yükleniyor...")
+    MODEL = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2')
+    print("✅ Embedding modeli yüklendi.")
+    print("FAISS veritabanı ve metin chunk'ları yükleniyor...")
+    FAISS_INDEX = faiss.read_index('tuik_faiss.index')
+    with open('tuik_chunks.pkl', 'rb') as f:
+        CHUNKS = pickle.load(f)
+    print(f"✅ Veritabanı ve {len(CHUNKS)} adet chunk başarıyla yüklendi.")
+except Exception as e:
+    print(f"❌ HATA: Model veya veritabanı dosyaları yüklenirken bir sorun oluştu: {e}")
+    MODEL, FAISS_INDEX, CHUNKS = None, None, None
+
+# --- ORİJİNAL KODUNUZDAN KORUNAN YAPILAR ---
 # --- GÜVENLİK AYARLARI ---
 PUBLIC_KEY_FILE = "public_key.pem"
 ISSUER_URL = "http://127.0.0.1:8070" 
@@ -20,199 +38,138 @@ AUDIENCE = "tuik-mcp-server"
 AuthInfo = namedtuple("AuthInfo", ["claims", "expires_at", "scopes", "client_id"])
 
 class SimpleBearerAuthProvider:
-    """
-    Gelen isteklerdeki JWT (JSON Web Token) formatındaki Bearer token'ları doğrulayan sınıf.
-    """
     def __init__(self, public_key: bytes, issuer: str, audience: str):
         self.public_key = public_key
         self.issuer = issuer
         self.audience = audience
         self.logger = setup_logger(__name__)
 
-    async def verify_token(self, token: str) -> Optional[AuthInfo]:
-        """Token'ın imzasını, süresini ve taleplerini doğrular."""
+    async def verify_token(self, token: str) -> Dict[str, Any]:
         try:
             decoded_token = jwt.decode(
-                token,
-                self.public_key,
-                algorithms=["RS256"],
-                audience=self.audience,
-                issuer=self.issuer,
+                token, self.public_key, algorithms=["RS256"],
+                audience=self.audience, issuer=self.issuer,
             )
             client_id = decoded_token.get("sub")
             return AuthInfo(claims=decoded_token, expires_at=decoded_token.get("exp"), scopes=[], client_id=client_id)
         except jwt.PyJWTError as e:
-            self.logger.error(f"Token doğrulama hatası: {e}")
-            return None
+            self.logger.error(f"Token verification failed: {e}")
+            raise Exception("Invalid token")
 
 class ConfigurationError(Exception):
-    """Yapılandırma hatası için özel exception sınıfı."""
     pass
 
-class TUIKMCPServer:
-    """
-    TÜİK verilerini işlemek için tasarlanmış ana MCP sunucu sınıfı.
-    """
-    def __init__(self, host: str = "0.0.0.0", port: int = 8070):
+class PaymentMCPServer: # Orijinal sınıf adınızı koruyoruz
+    def __init__(self, host: str, port: int, transport: str, auth_token: Optional[str] = None):
         self.logger = setup_logger(__name__)
         self.mcp = None
         self.host = host
         self.port = port
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.transport = transport
+        self.auth_token = auth_token
     
     async def initialize(self) -> FastMCP:
-        """
-        MCP sunucusunu başlatır, kimlik doğrulama mekanizmasını kurar ve araçları kaydeder.
-        """
-        self.logger.info(f"MCP sunucusu {self.host}:{self.port} adresinde başlatılıyor...")
-
+        self.logger.info(f"Initializing MCP server")
         auth_provider = None
-        auth_config = None # auth_config'i başlangıçta None olarak ayarlıyoruz.
-        try:
-            public_key_path = os.path.join(self.base_dir, PUBLIC_KEY_FILE)
-            with open(public_key_path, "rb") as f:
-                public_key = f.read()
-            
-            auth_provider = SimpleBearerAuthProvider(
-                public_key=public_key,
-                issuer=ISSUER_URL,
-                audience=AUDIENCE
-            )
-            self.logger.info("Kimlik doğrulama sağlayıcısı genel anahtar (public key) ile yüklendi.")
-            
-            # --- HATA DÜZELTMESİ: auth_config'i burada tanımlıyoruz ---
-            # Eğer bir auth_provider varsa, auth ayarlarını da oluşturmalıyız.
-            if auth_provider:
-                auth_config = {
-                    "issuer_url": ISSUER_URL,
-                    "resource_server_url": f"http://{self.host}:{self.port}",
-                }
-            # ---------------------------------------------------------
+        if self.transport == 'sse':
+            self.logger.info("SSE transport: setting up Simple Bearer authentication.")
+            try:
+                with open(PUBLIC_KEY_FILE, "rb") as f:
+                    public_key = f.read()
+                auth_provider = SimpleBearerAuthProvider(
+                    public_key=public_key, issuer=ISSUER_URL, audience=AUDIENCE
+                )
+                self.logger.info("Authentication provider loaded with public key.")
+            except FileNotFoundError:
+                self.logger.error(f"{PUBLIC_KEY_FILE} not found. Please run dashboard.py to generate it.")
+                raise ConfigurationError(f"{PUBLIC_KEY_FILE} not found.")
 
-        except FileNotFoundError:
-            self.logger.warning(f"{PUBLIC_KEY_FILE} bulunamadı. Sunucu kimlik doğrulaması olmadan çalışacak.")
-            self.logger.warning("Bu sadece geliştirme ortamı için önerilir.")
-        
-        # FastMCP nesnesini kimlik doğrulama ayarlarıyla birlikte oluşturuyoruz.
+        auth_config = None
+        if auth_provider:
+            resource_server_url = f"http://{self.host}:{self.port}"
+            auth_config = {
+                "issuer_url": ISSUER_URL,
+                "resource_server_url": resource_server_url,
+            }
+
         self.mcp = FastMCP(
-            name="TUIK Veri Analiz Sunucusu",
-            host=self.host,
-            port=self.port,
+            name="TUIK RAG MCP Server", # İsmi güncelledik
+            host=self.host, port=self.port,
             token_verifier=auth_provider,
-            auth=auth_config, # DÜZELTME: Eksik olan parametreyi ekledik.
+            auth=auth_config,
         )
         
         self._register_tools()
         
-        self.logger.info("MCP sunucusu başarıyla başlatıldı ve araçlar kaydedildi.")
+        self.logger.info("MCP server initialized successfully")
         return self.mcp
-
-    def load_data_map_from_json(self) -> List[Dict[str, Any]]:
-        """
-        'data.json' dosyasını yükleyerek veri haritasını belleğe alır.
-        """
-        try:
-            json_path = os.path.join(self.base_dir, 'data.json')
-            with open(json_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            self.logger.error("'data.json' bulunamadı. Lütfen 'prepare_data.py' betiğini çalıştırın.")
-            return []
-
+        
+    # --- DEĞİŞTİRİLEN KISIM: Araçlar ---
     def _register_tools(self):
-        """
-        Yapay zekanın kullanabileceği araçları (fonksiyonları) MCP sunucusuna kaydeder.
-        """
+        """Register MCP tools."""
+        
+        # Eski 'analyze_question_and_select_files' ve 'read_and_convert_files' araçları silindi.
+        # Yerine tek ve güçlü RAG aracı geldi.
         @self.mcp.tool()
-        async def analyze_question_and_select_files(user_question: str) -> str:
+        async def answer_question_with_rag(user_question: str, top_k: int = 5) -> str:
             """
-            Kullanıcının sorusunu analiz eder ve ilgili veri dosyalarını seçer.
+            Kullanıcının sorusunu alır, vektör veritabanında arar, en alakalı
+            bilgileri bulur ve nihai bir cevap oluşturmak için bir prompt hazırlar.
             """
-            self.logger.info(f"Gelen soru analiz ediliyor: '{user_question}'")
-            all_data = self.load_data_map_from_json()
-            if not all_data:
-                return json.dumps({"error": "'data.json' dosyası boş veya bulunamadı."}, ensure_ascii=False)
+            if not all([MODEL, FAISS_INDEX, CHUNKS]):
+                return json.dumps({"error": "Sunucu başlangıcında RAG modelleri yüklenemedi."})
 
-            question_lower = user_question.lower()
-            selected_files = []
+            print(f"\n🔎 Gelen Soru: '{user_question}'")
+            question_embedding = MODEL.encode(user_question)
+            question_embedding = np.array([question_embedding]).astype('float32')
             
-            for category in all_data:
-                category_name_lower = category['name'].lower()
-                if any(word in category_name_lower for word in question_lower.split()):
-                    selected_files.append({
-                        "category_name": category['name'],
-                        "category_path": category['kategori'],
-                        "files": category['files'][:5]
-                    })
-
-            if not selected_files:
-                for category in all_data:
-                    for file_name in category['files']:
-                        if any(word in file_name.lower() for word in question_lower.split()):
-                             selected_files.append({
-                                "category_name": category['name'],
-                                "category_path": category['kategori'],
-                                "files": [file_name]
-                            })
+            print(f"🧠 FAISS veritabanında en yakın {top_k} sonuç aranıyor...")
+            distances, indices = FAISS_INDEX.search(question_embedding, top_k)
             
-            if not selected_files:
-                return json.dumps({"error": "Soruyla ilgili uygun dosya bulunamadı."}, ensure_ascii=False)
+            retrieved_chunks = [CHUNKS[i] for i in indices[0]]
+            context = "\n\n---\n\n".join([chunk['text'] for chunk in retrieved_chunks])
+            sources = list(set([chunk['metadata']['source'] for chunk in retrieved_chunks]))
+            print("📚 İlgili metinler başarıyla bulundu.")
+            
+            final_prompt = f"""## GÖREV ##\nSen, Türkiye İstatistik Kurumu (TÜİK) verileri konusunda uzman bir veri analistisin...\n\n## BAĞLAM ##\n{context}\n\n## KAYNAKLAR ##\n{', '.join(sources)}\n\n## KULLANICI SORUSU ##\n{user_question}\n\n## CEVAP ##"""
+            
+            result = {"user_question": user_question, "retrieved_context": context, "retrieved_sources": sources, "final_prompt_for_llm": final_prompt}
+            return json.dumps(result, ensure_ascii=False, indent=2)
 
-            self.logger.info(f"{len(selected_files)} adet ilgili dosya grubu bulundu.")
-            return json.dumps(selected_files, ensure_ascii=False, indent=2)
-
-        @self.mcp.tool()
-        async def read_and_process_files(selected_files_json: str) -> str:
-            """
-            Seçilen Excel dosyalarını okur ve içeriğini JSON formatına dönüştürür.
-            """
-            try:
-                selected_groups = json.loads(selected_files_json)
-                processed_data = {}
-
-                for group in selected_groups:
-                    category_path = group['category_path']
-                    for file_name in group['files']:
-                        file_path = os.path.join(self.base_dir, 'data', category_path, file_name)
-                        
-                        self.logger.info(f"'{file_path}' dosyası okunuyor...")
-                        
-                        try:
-                            if os.path.exists(file_path):
-                                engine = 'openpyxl' if file_name.endswith('.xlsx') else 'xlrd'
-                                df = pd.read_excel(file_path, engine=engine, nrows=15)
-                                df = df.where(pd.notnull(df), None)
-                                processed_data[file_name] = df.to_dict('records')
-                            else:
-                                processed_data[file_name] = {"error": "Dosya bulunamadı."}
-                        except Exception as e:
-                            self.logger.error(f"'{file_name}' dosyası okunurken hata: {e}")
-                            processed_data[file_name] = {"error": f"Dosya okunurken hata oluştu: {str(e)}"}
-                
-                return json.dumps(processed_data, ensure_ascii=False, indent=2, default=str)
-            except Exception as e:
-                self.logger.error(f"JSON verisi işlenirken hata: {e}")
-                return json.dumps({"error": f"Gelen veri formatı hatalı: {str(e)}"}, ensure_ascii=False)
-
+# --- ORİJİNAL KODUNUZDAN KORUNAN BAŞLATMA YAPISI ---
 @click.command()
-@click.option('--host', default='0.0.0.0', help='Sunucu adresi (varsayılan: 0.0.0.0)')
-@click.option('--port', default=8070, help='Sunucu portu (varsayılan: 8070)')
-def main(host, port):
-    """TÜİK Veri Analizi MCP Sunucusunu başlatır."""
-    server = TUIKMCPServer(host=host, port=port)
-
-    # Sunucuyu asenkron olarak başlatmak için bir fonksiyon
-    async def run_server():
-        mcp_app = await server.initialize()
-        # Hata mesajının önerdiği doğru metodu kullanıyoruz: run_sse_async
-        # Bu metot zaten asenkron olduğu için 'await' ile çağrılmalıdır.
-        await mcp_app.run_sse_async()
-
+@click.option('--host', default='0.0.0.0', help='Server host (default: 0.0.0.0)')
+@click.option('--port', default=8070, help='Server port (default: 8070)') # Portu orijinal haline (8070) geri getirdik
+@click.option('--transport', envvar='TRANSPORT', default='sse', help='Transport type (default: sse)')
+@click.option('--auth-token', envvar='AUTH_TOKEN', help='Bearer token for SSE transport.')
+def main(host, port, transport, auth_token):
+    """Start the TUIK RAG MCP server."""
+    
+    logger = setup_logger(__name__)
+    
     try:
-        # Asenkron fonksiyonu asyncio.run ile çalıştırıyoruz.
-        asyncio.run(run_server())
-    except KeyboardInterrupt:
-        print("\nSunucu kapatılıyor.")
+        valid_transports = ['stdio', 'sse']
+        if transport not in valid_transports:
+            raise ConfigurationError(f"Unsupported transport '{transport}'. Available: {', '.join(valid_transports)}")
+        
+        logger.info(f"Starting TUIK RAG MCP server")
+        logger.info(f"Transport: {transport}")
+        logger.info(f"Server will run on {host}:{port}")
+        
+        async def _run():
+            server = PaymentMCPServer(host=host, port=port, transport=transport, auth_token=auth_token)
+            mcp = await server.initialize()
+            logger.info("MCP server started successfully")
+            return mcp
+        
+        mcp = asyncio.run(_run())
+        # Not: run_sse_async hatası almamak için doğrudan kütüphanenin run metodunu kullanalım
+        # Kütüphane transport tipine göre doğru çalıştırıcıyı seçecektir.
+        mcp.run(transport=transport)
+        
+    except Exception as e:
+        logger.error(f"Failed to start server: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main()

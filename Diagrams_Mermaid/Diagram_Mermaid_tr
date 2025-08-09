@@ -1,0 +1,72 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'primaryColor': '#F3F4F6', 'primaryTextColor': '#1F2937', 'lineColor': '#4B5563', 'secondaryColor': '#E5E7EB' }}}%%
+flowchart TD
+    subgraph "Faz 1: Veritabanı Oluşturma (Çevrimdışı - build_vector_db.py)"
+        direction LR
+        A[/" /data Klasöründeki Excel Dosyaları"/]
+        B("CSV'ye Çevir")
+        C{{"Gemini API <br> (Veri Ayrıştırıcı)"}}
+        D("Metin Parçaları Oluştur")
+        E{{"SentenceTransformer <br> (Embedding Modeli)"}}
+        F("Vektörlere Dönüştür")
+        
+        A --> B --> C -- "Anlamlı Cümleler (Chunk'lar)" --> D;
+        D --> E -- "Anlam Vektörleri" --> F;
+    end
+
+    subgraph "Ortak Veritabanı"
+        direction LR
+        G[("tuik_faiss.index")]
+        H[("tuik_chunks.pkl")]
+    end
+
+    subgraph "Faz 2: Soruları Cevaplama (Çevrimiçi)"
+        subgraph "Kullanıcı Arayüzü"
+            I[/"Kullanıcı Sorusu <br> (Telegram)"/]
+            I_Cevap[/"Kullanıcıya Giden Cevap <br> (Telegram)"/]
+        end
+
+        subgraph "n8n Otomasyon Katmanı"
+            J("Telegram Trigger");
+            K("MCP Client Aracı");
+            L("Gemini Nodu <br> (Cevap Yazarı)");
+            M("Telegram Sender");
+            
+        end
+
+        subgraph "Güvenlik Katmanı"
+            N[dashboard.py]
+            O((Bearer Token))
+            N --> O;
+        end
+
+        subgraph "RAG API Sunucusu (server.py)"
+            P("Gelen İsteği Doğrula");
+            Q("Soruyu Vektöre Çevir <br> SentenceTransformer kullanılır");
+            R("FAISS'te Arama Yap");
+            S("İlgili Chunk'ları Al");
+            T("Final Prompt'u Oluştur");
+        end
+    end
+    
+    F -- "Vektörleri Yazar" --> G;
+    D -- "Metinleri Yazar" --> H;
+
+    I --> J --> K;
+    O -.-> K;
+    K -- "Ngrok Tüneli" --> P --> Q --> R;
+    R -- "Arama Yapar" --> G;
+    R -- "Bulunan Vektör ID'leri" --> S;
+    S -- "Veri Okur" --> H;
+    S --> T -- "Hazır Prompt" --> K;
+    K --> L --> M --> I_Cevap;
+
+    %% Styling
+    style A fill:#FFF9C4,stroke:#FBC02D
+    style G fill:#C8E6C9,stroke:#388E3C
+    style H fill:#C8E6C9,stroke:#388E3C
+    style I fill:#FFCCBC,stroke:#E64A19
+    style I_Cevap fill:#B3E5FC,stroke:#0288D1
+    style N fill:#D1C4E9,stroke:#512DA8
+    style C fill:#B2EBF2,stroke:#0097A7
+    style E fill:#B2EBF2,stroke:#0097A7
+    style L fill:#B2EBF2,stroke:#0097A7

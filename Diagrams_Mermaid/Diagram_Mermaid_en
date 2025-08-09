@@ -1,0 +1,72 @@
+%%{ init: { 'theme': 'base', 'themeVariables': { 'primaryColor': '#F3F4F6', 'primaryTextColor': '#1F2937', 'lineColor': '#4B5563', 'secondaryColor': '#E5E7EB' }}}%%
+flowchart TD
+    subgraph "Phase 1: Database Creation (Offline - build_vector_db.py)"
+        direction LR
+        A[/"Excel Files in /data Folder"/]
+        B("Convert to CSV")
+        C{{"Gemini API <br> (Data Parser)"}}
+        D("Create Text Chunks")
+        E{{"SentenceTransformer <br> (Embedding Model)"}}
+        F("Convert to Vectors")
+        
+        A --> B --> C -- "Meaningful Sentences (Chunks)" --> D;
+        D --> E -- "Semantic Vectors" --> F;
+    end
+
+    subgraph "Shared Database"
+        direction LR
+        G[("tuik_faiss.index")]
+        H[("tuik_chunks.pkl")]
+    end
+
+    subgraph "Phase 2: Answering Questions (Online)"
+        subgraph "User Interface"
+            I[/"User Question <br> (Telegram)"/]
+            I_Cevap[/"Response to User <br> (Telegram)"/]
+        end
+
+        subgraph "n8n Automation Layer"
+            J("Telegram Trigger");
+            K("MCP Client Tool");
+            L("Gemini Node <br> (Answer Writer)");
+            M("Telegram Sender");
+            
+        end
+
+        subgraph "Security Layer"
+            N[dashboard.py]
+            O((Bearer Token))
+            N --> O;
+        end
+
+        subgraph "RAG API Server (server.py)"
+            P("Validate Incoming Request");
+            Q("Convert Question to Vector <br> using SentenceTransformer");
+            R("Search in FAISS");
+            S("Retrieve Relevant Chunks");
+            T("Create Final Prompt");
+        end
+    end
+    
+    F -- "Writes Vectors" --> G;
+    D -- "Writes Texts" --> H;
+
+    I --> J --> K;
+    O -.-> K;
+    K -- "Ngrok Tunnel" --> P --> Q --> R;
+    R -- "Performs Search" --> G;
+    R -- "Found Vector IDs" --> S;
+    S -- "Reads Data" --> H;
+    S -- "Ready Prompt" --> K;
+    K --> L --> M --> I_Cevap;
+
+    %% Styling
+    style A fill:#FFF9C4,stroke:#FBC02D
+    style G fill:#C8E6C9,stroke:#388E3C
+    style H fill:#C8E6C9,stroke:#388E3C
+    style I fill:#FFCCBC,stroke:#E64A19
+    style I_Cevap fill:#B3E5FC,stroke:#0288D1
+    style N fill:#D1C4E9,stroke:#512DA8
+    style C fill:#B2EBF2,stroke:#0097A7
+    style E fill:#B2EBF2,stroke:#0097A7
+    style L fill:#B2EBF2,stroke:#0097A7
