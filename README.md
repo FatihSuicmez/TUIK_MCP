@@ -1,4 +1,4 @@
-# TÜİK RAG MCP Asistanı | TUIK RAG Assistant
+# TÜİK RAG MCP Asistanı | TUIK RAG MCP Assistant
 
 Bu proje, Türkiye İstatistik Kurumu (TÜİK) tarafından yayınlanan binlerce Excel dosyasını işleyerek, bu veriler hakkında doğal dilde sorulan sorulara akıllı ve bağlama uygun cevaplar üreten gelişmiş bir RAG (Retrieval-Augmented Generation) sistemidir.
 
