@@ -85,8 +85,9 @@ pip install -r requirements.txt
 
 #### Adım 3: Hazır Veritabanını İndirme (Tavsiye Edilen Yöntem)
 Veritabanını sıfırdan oluşturmak saatler sürer ve maliyetlidir.
-1.  Bu GitHub projesinin **"Releases"** bölümüne gidin.
-2.  En son sürümdeki `database.zip` dosyasını indirin.
+Veritabanı dosyaları (~1 GB) GitHub'ın dosya limiti için çok büyük olduğundan, harici bir bulut depolama servisinde barındırılmaktadır.
+1.  [Bu Kısımdan](https://drive.google.com/file/d/18MfO-Q0Oo7UTeT4iWUrIK1STIzrYW09-/view?usp=sharing) database.zip dosyasını indirin.
+2.  İndirdiğiniz .zip dosyasını açın.
 3.  İçindeki `tuik_faiss.index`,`tuik_chunks.pkl` dosyalarını ve `/data` klasörünü projenin ana klasörüne kopyalayın.
 
 ---
@@ -188,8 +189,9 @@ pip install -r requirements.txt
 3.  **Ngrok (Required Tool):** Download `ngrok` from the [Ngrok download page](https://ngrok.com/download).
 
 #### Step 3: Download Pre-built Database (Recommended)
-1.  Go to the **"Releases"** section of this GitHub repository.
-2.  Download `database.zip`.
+The database files (~1 GB) are too large for GitHub's file limit, so they are hosted on an external cloud storage service.
+1.  Download the database.zip file [from this link](https://drive.google.com/file/d/18MfO-Q0Oo7UTeT4iWUrIK1STIzrYW09-/view?usp=sharing).
+2.  Open the downloaded .zip file.
 3.  Extract `tuik faiss.index`,`tuik chunks.pkl` files, and the /data folder from within it to the project's root folder.
 
 ---
